@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 class AbstractRecommender(nn.Module, ABC):
     """Abstract base class for recommender models"""
     
-    def __init__(self, n_users, n_items, embed_dim):
+    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None):
         """
         Initialize base recommender
         
@@ -14,11 +14,15 @@ class AbstractRecommender(nn.Module, ABC):
             n_users (int): Number of users in the dataset
             n_items (int): Number of items in the dataset 
             embed_dim (int): Dimension of embeddings
+            user_meta_fn (function): function to get user metadata
+            item_meta_fn (function): function to get item metadata
         """
         super().__init__()
         self.n_users = n_users
         self.n_items = n_items
         self.embed_dim = embed_dim
+        self.user_meta_fn = user_meta_fn
+        self.item_meta_fn = item_meta_fn
         
         # Initialize user and item embeddings
         self.user_embedding = nn.Embedding(n_users, embed_dim)
@@ -59,6 +63,20 @@ class AbstractRecommender(nn.Module, ABC):
         """
         pass
     
+    @abstractmethod
+    def predict(self, user_ids, item_ids):
+        """
+        Predict scores for given user-item pairs
+        
+        Args:
+            user_ids (torch.LongTensor): User IDs
+            item_ids (torch.LongTensor): Item IDs
+            
+        Returns:
+            torch.FloatTensor: Predicted scores
+        """
+        pass
+    
     @torch.no_grad()
     def recommend(self, user_id, k=None):
         """
@@ -82,22 +100,6 @@ class AbstractRecommender(nn.Module, ABC):
             return all_items[indices]
         
         return scores
-    
-    def predict(self, user_ids, item_ids):
-        """
-        Predict scores for given user-item pairs
-        
-        Args:
-            user_ids (torch.LongTensor): User IDs
-            item_ids (torch.LongTensor): Item IDs
-            
-        Returns:
-            torch.FloatTensor: Predicted scores
-        """
-        user_embeds = self.user_embedding(user_ids)
-        item_embeds = self.item_embedding(item_ids)
-        
-        return (user_embeds * item_embeds).sum(dim=-1)
         
     def get_user_embedding(self, user_id):
         """Get embedding for a user"""
@@ -107,6 +109,14 @@ class AbstractRecommender(nn.Module, ABC):
         """Get embedding for an item"""
         return self.item_embedding(torch.LongTensor([item_id]).to(self.device))
     
+    def get_user_metadata(self, user_id):
+        """Get user metadata"""
+        return self.user_meta_fn(user_id)
+    
+    def get_item_metadata(self, item_id):
+        """Get item metadata"""
+        return self.item_meta_fn(item_id)
+    
     @property
     def device(self):
         """Get device model is on"""
@@ -114,8 +124,8 @@ class AbstractRecommender(nn.Module, ABC):
 
 
 class NCFRecommender(AbstractRecommender):
-    def __init__(self, n_users, n_items, embed_dim):
-        super().__init__(n_users, n_items, embed_dim)
+    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None):
+        super().__init__(n_users, n_items, embed_dim, user_meta_fn, item_meta_fn)
         self.mlp_layers = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
             nn.ReLU(),
@@ -138,6 +148,54 @@ class NCFRecommender(AbstractRecommender):
     
     def calculate_loss(self, pos_scores, neg_scores):
         return -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
+    
+    def predict(self, user_ids, item_ids):
+        user_embeds = self.user_embedding(user_ids)
+        item_embeds = self.item_embedding(item_ids)
+        
+        # return (user_embeds * item_embeds).sum(dim=-1)
+        concated_embeds = torch.cat([user_embeds, item_embeds], dim=-1)
+        mlp_output = self.mlp_layers(concated_embeds).reshape(-1)
+        return mlp_output
+    
+class LLMBasedNCFRecommender(AbstractRecommender):
+    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None):
+        super().__init__(n_users, n_items, embed_dim, user_meta_fn, item_meta_fn)
+        self.mlp_layers = nn.Sequential(
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, 1)
+        )
+    def forward(self, batch_data):
+        user_ids, pos_item_ids, neg_item_ids = batch_data
+        user_embeds = self.user_embedding(user_ids)
+        pos_item_embeds = self.item_embedding(pos_item_ids)
+        neg_item_embeds = self.item_embedding(neg_item_ids)
+        
+        concated_embeds = torch.cat([user_embeds, pos_item_embeds], dim=-1)
+        concated_embeds_neg = torch.cat([user_embeds, neg_item_embeds], dim=-1)
+        mlp_output = self.mlp_layers(concated_embeds)
+        mlp_output_neg = self.mlp_layers(concated_embeds_neg)
+        
+        return mlp_output, mlp_output_neg
+    
+    def calculate_loss(self, pos_scores, neg_scores):
+        return -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
+    
+    # def predict(self, user_ids, item_ids):
+    #     user_embeds = self.user_embedding(user_ids)
+    #     item_embeds = self.item_embedding(item_ids)
+    #     return (user_embeds * item_embeds).sum(dim=-1)
+    
+    def predict(self, user_ids, item_ids):
+        user_embeds = self.user_embedding(user_ids)
+        item_embeds = self.item_embedding(item_ids)
+        
+        concated_embeds = torch.cat([user_embeds, item_embeds], dim=-1)
+        mlp_output = self.mlp_layers(concated_embeds)
+        return mlp_output
     
     
 if __name__ == '__main__':

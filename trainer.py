@@ -75,13 +75,14 @@ class Trainer:
             
             # Loss computation and backward pass
             backward_start = time()
-            loss = -(pos_scores - neg_scores).sigmoid().log().mean()
+            # loss = -(pos_scores - neg_scores).sigmoid().log().mean()
+            loss = self.model.calculate_loss(pos_scores, neg_scores)
+            self.optimizer.zero_grad()
             loss.backward()
             backward_time += time() - backward_start
             
             # Optimizer step
             optimizer_start = time()
-            self.optimizer.zero_grad()
             self.optimizer.step()
             optimizer_time += time() - optimizer_start
             
