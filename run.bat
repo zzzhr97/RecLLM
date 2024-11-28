@@ -1,0 +1,1 @@
+python main.py --model NCF --batch-size 256 --n-epochs 300 --lr 2e-4 --wd 0 --optimizer adam --device -1 --eval-step 1 --esp 10 --exp-dir="./exp" --exp-name="NCF1" --emb-dim 1024
