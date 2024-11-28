@@ -152,15 +152,15 @@ class Trainer:
         idcg = np.sum([1 / np.log2(idx + 2) for idx in range(pos_items)])
         return dcg / idcg if idcg > 0 else 0
 
-    def _should_early_stop(self, metric_value):
-        """Check if training should early stop"""
-        if metric_value > self.best_valid_score:
-            self.best_valid_score = metric_value
-            self.wait_epochs = 0
-            return False
-        else:
-            self.wait_epochs += 1
-            return self.wait_epochs >= self.early_stop_patience
+    # def _should_early_stop(self, metric_value):
+    #     """Check if training should early stop"""
+    #     if metric_value > self.best_valid_score:
+    #         self.best_valid_score = metric_value
+    #         self.wait_epochs = 0
+    #         return False
+    #     else:
+    #         self.wait_epochs += 1
+    #         return self.wait_epochs >= self.early_stop_patience
 
     def fit(self, save_model=False, model_path='checkpoint.pth'):
         """Train model"""
@@ -186,18 +186,25 @@ class Trainer:
                     f'valid_time: {valid_time:.2f}s'
                 )
                 
-                # Save best model
+                # Save best model & check early stop
+                # ! 这里更新了 self.best_valid_score, 导致后面的 self._should_early_stop 没有作用
                 if valid_result["NDCG@10"] > self.best_valid_score:
                     self.best_valid_score = valid_result["NDCG@10"]
                     self.best_valid_result = valid_result
+                    self.wait_epochs = 0
                     if save_model:
                         torch.save(self.model.state_dict(), model_path)
                         self.best_model_path = model_path
+                else:
+                    self.wait_epochs += 1
+                    if self.wait_epochs >= self.early_stop_patience:    # early stop
+                        self.logger.info("Early stopping triggered")
+                        break
                 
-                # Early stopping check
-                if self._should_early_stop(valid_result["NDCG@10"]):
-                    self.logger.info("Early stopping triggered")
-                    break
+                # # Early stopping check
+                # if self._should_early_stop(valid_result["NDCG@10"]):
+                #     self.logger.info("Early stopping triggered")
+                #     break
                 
         # Load best model for testing
         if save_model and self.best_model_path is not None:
@@ -206,6 +213,7 @@ class Trainer:
         # Final test evaluation
         if self.test_loader is not None:
             test_result = self._evaluate(self.test_loader)
+            self.logger.info(f"Best Validation Result: {self.best_valid_result}")
             self.logger.info(f"Test Result: {test_result}")
             return self.best_valid_result, test_result
             

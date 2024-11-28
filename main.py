@@ -17,6 +17,7 @@ def parse_args():
     parser.add_argument('--n-epochs', type=int, default=300, help="Epoch number.")
     parser.add_argument('--lr', type=float, default=1e-3, help="Learning rate.")
     parser.add_argument('--wd', type=float, default=.0, help="Weight decay.")
+    parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help='Optimizer.')
     parser.add_argument('--device', type=int, default=0, help="GPU id, -1 for CPU.")
     parser.add_argument('--eval-step', type=int, default=1, help="Evaluation interval.")
     parser.add_argument('--esp', type=int, default=10, help="Early stop patience.")
@@ -41,7 +42,7 @@ def parse_args():
             torch.backends.cudnn.version()))
         args_file.write('==> Cmd:\n')
         args_file.write(str(sys.argv))
-        args_file.write('\n==> Opt:\n')
+        args_file.write('\n==> Args:\n')
         for k, v in sorted(vars(args).items()):
             args_file.write('  %s: %s\n' % (str(k), str(v)))
     
@@ -55,6 +56,13 @@ def setup_logger(args):
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+    
+def present_result(name, result):
+    print_str = f"{name}:\n"
+    for k,v in result.items():
+        print_str += f"    {k:<7}: {v:.4f}\n"
+    logging.info(print_str)
+    print(print_str, end='')
     
 def create_model(args, dataset):
     if args.model in ['NCF']:
@@ -103,7 +111,7 @@ def train():
         device=args.device,
         epochs=args.n_epochs,
         batch_size=args.batch_size,
-        optimizer='adam',
+        optimizer=args.optimizer,
         lr=args.lr,
         weight_decay=args.wd,
         eval_step=args.eval_step,
@@ -111,10 +119,8 @@ def train():
     )
 
     valid_result, test_result = trainer.fit(save_model=True, model_path=args.model_path)
-    logging.info(f"Best Validation Result: {valid_result}")
-    logging.info(f"Test Result: {test_result}")
-    print(f"Best Validation Result: {valid_result}")
-    print(f"Test Result: {test_result}")
+    present_result("Best Validation Result", valid_result)
+    present_result("Test Result", test_result)
     
 if __name__ == '__main__':
     train()

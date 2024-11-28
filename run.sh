@@ -1,9 +1,10 @@
 python main.py \
     --model NCF \
-    --batch-size 128 \
+    --batch-size 256 \
     --n-epochs 300 \
-    --lr 1e-3 \
+    --lr 2e-4 \
     --wd 0 \
+    --optimizer adam \
     --device 3 \
     --eval-step 1 \
     --esp 10 \
