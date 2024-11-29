@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 from abc import ABC, abstractmethod
+from transformers import GPT2Model, GPT2Tokenizer
+import pandas as pd
 
 class AbstractRecommender(nn.Module, ABC):
     """Abstract base class for recommender models"""
@@ -30,6 +32,10 @@ class AbstractRecommender(nn.Module, ABC):
         
         # Initialize embeddings with Xavier uniform
         self._init_weights()
+        
+        # Initialize GPT2 tokenizer and model
+        self.model = GPT2Model.from_pretrained('gpt2')
+        self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
         
     def _init_weights(self):
         """Initialize weights using Xavier uniform"""
@@ -116,6 +122,38 @@ class AbstractRecommender(nn.Module, ABC):
     def get_item_metadata(self, item_id):
         """Get item metadata"""
         return self.item_meta_fn(item_id)
+    
+    def get_user_meta_emb(self, user_id):
+        """Get user metadata embedding with GPT2 as tokenizer"""
+        user_meta = self.get_user_metadata(user_id)
+        input_data = {
+            # user_id和结果应该无关，所以不包含在输入里面
+            'gender': [user_meta['gender']],
+            'age': [user_meta['age']],
+            'occupation': [user_meta['occupation']],
+            'zip_code': [user_meta['zip_code']]
+        }
+        df = pd.DataFrame(input_data)
+        input_text = " ".join(df.apply(lambda x: " ".join(x), axis=1))
+        input_token = self.tokenizer(input_text, return_tensors='pt')
+        with torch.no_grad():
+            output = self.model(**input_token)
+        return output.last_hidden_state.mean(dim=1).squeeze()
+    
+    def get_item_meta_emb(self, item_id):
+        """Get item metadata embedding with GPT2 as tokenizer"""
+        item_meta = self.get_item_metadata(item_id)
+        input_data = {
+            # item_id和结果应该无关，所以不包含在输入里面
+            'title': [item_meta['title']],
+            'genres': [item_meta['genres']]
+        }
+        df = pd.DataFrame(input_data)
+        input_text = " ".join(df.apply(lambda x: " ".join(x), axis=1))
+        input_token = self.tokenizer(input_text, return_tensors='pt')
+        with torch.no_grad():
+            output = self.model(**input_token)
+        return output.last_hidden_state.mean(dim=1).squeeze()
     
     @property
     def device(self):

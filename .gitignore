@@ -1,6 +1,7 @@
 ml-1m/
 test.ipynb
 exp/
+result/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
