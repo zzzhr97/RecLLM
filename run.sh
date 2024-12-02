@@ -1,13 +1,16 @@
+export HF_ENDPOINT=https://hf-mirror.com
+
 python main.py \
-    --model NCF \
-    --batch-size 256 \
+    --model NCF-LLM \
+    --batch-size 512 \
     --n-epochs 300 \
-    --lr 2e-4 \
+    --lr 1e-4 \
     --wd 0 \
     --optimizer adam \
-    --device 3 \
+    --device 2 \
     --eval-step 1 \
-    --esp 10 \
+    --esp 15 \
     --exp-dir="./exp" \
-    --exp-name="NCF1" \
-    --emb-dim 1024
+    --exp-name="NCF3" \
+    --emb-dim 1024 \
+    --llm gpt2

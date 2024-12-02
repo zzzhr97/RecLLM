@@ -6,7 +6,7 @@ import argparse
 from dataset import ML1MDataset
 from dataloader import TrainDataLoader, EvalDataLoader
 from trainer import Trainer
-from recommender import NCFRecommender
+from recommender import NCFRecommender, LLMBasedNCFRecommender
 from datetime import datetime
 
 def parse_args():
@@ -25,6 +25,7 @@ def parse_args():
     parser.add_argument('--exp-name', type=str, default='NCF_1', help="Experiment directory.")
     
     parser.add_argument('--emb-dim', type=int, default=1024, help="Embedding dim.")
+    parser.add_argument('--llm', type=str, default='gpt2', help="LLM model name.")
 
     args = parser.parse_args()
     
@@ -69,16 +70,23 @@ def create_model(args, dataset):
         module = NCFRecommender
         model_kwargs = {
             'embed_dim': args.emb_dim,
+            'llm': 'none'
+        }
+    elif args.model in ['NCF-LLM']:
+        module = LLMBasedNCFRecommender
+        model_kwargs = {
+            'embed_dim': args.emb_dim,
+            'llm': args.llm
         }
     else:
         raise NotImplementedError
+    
     return module(
         n_users=dataset.get_user_num(),
         n_items=dataset.get_item_num(),
         user_meta_fn=dataset.get_user_meta,
         item_meta_fn=dataset.get_item_meta,
-        **model_kwargs
-    )
+        **model_kwargs)
 
 def train():
     args = parse_args()

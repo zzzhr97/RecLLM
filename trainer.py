@@ -51,7 +51,7 @@ class Trainer:
         self.best_model_path = None
         self.wait_epochs = 0
         
-    def _train_epoch(self):
+    def _train_epoch(self, epoch):
         """Train model for one epoch"""
         self.model.train()
         total_loss = 0.
@@ -63,7 +63,7 @@ class Trainer:
         backward_time = 0
         optimizer_time = 0
         
-        for batch in self.train_loader:
+        for batch in tqdm(self.train_loader, f"Epoch {epoch+1}"):
             batch_start = time()
             users, pos_items, neg_items = batch
             data_loading_time += time() - batch_start
@@ -78,7 +78,7 @@ class Trainer:
             # loss = -(pos_scores - neg_scores).sigmoid().log().mean()
             loss = self.model.calculate_loss(pos_scores, neg_scores)
             self.optimizer.zero_grad()
-            loss.backward()
+            loss.backward()     #* fixed loss backward
             backward_time += time() - backward_start
             
             # Optimizer step
@@ -105,12 +105,14 @@ class Trainer:
     def _evaluate(self, eval_loader, k=[10, 20, 50]):
         """Evaluate model on validation/test set"""
         self.model.eval()
+        self.model.precompute_item_embeds() # precompute to save time
         
         metrics = {
             f'NDCG@{k_}': [] for k_ in k
         }
         metrics.update({f'HR@{k_}': [] for k_ in k})
         
+        pbar = tqdm(range(eval_loader.pr_end), desc="Evaluation")
         for users in eval_loader:
             # Get user positive items
             pos_items = eval_loader.get_user_eval_pos_items(users.cpu().numpy())
@@ -120,6 +122,8 @@ class Trainer:
             for user in users:
                 score = self.model.recommend(user)
                 scores.append(score)
+                pbar.update(1)
+                
             scores = torch.stack(scores)
             
             # Calculate metrics for each user
@@ -164,10 +168,10 @@ class Trainer:
 
     def fit(self, save_model=False, model_path='checkpoint.pth'):
         """Train model"""
-        for epoch in tqdm(range(self.epochs), desc='Training'):
+        for epoch in range(self.epochs):
             # Train
             train_start = time()
-            train_loss = self._train_epoch()
+            train_loss = self._train_epoch(epoch)
             train_time = time() - train_start
             
             # Evaluate
@@ -187,7 +191,7 @@ class Trainer:
                 )
                 
                 # Save best model & check early stop
-                # ! 这里更新了 self.best_valid_score, 导致后面的 self._should_early_stop 没有作用
+                # * fixed early stop
                 if valid_result["NDCG@10"] > self.best_valid_score:
                     self.best_valid_score = valid_result["NDCG@10"]
                     self.best_valid_result = valid_result
