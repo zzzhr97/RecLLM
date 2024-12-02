@@ -2,13 +2,14 @@ import torch
 import torch.nn as nn
 import numpy as np
 from abc import ABC, abstractmethod
-from transformers import GPT2Model, GPT2Tokenizer
 import pandas as pd
+from transformers import GPT2Model, GPT2Tokenizer 
+from peft import LoraConfig, get_peft_model
 
 class AbstractRecommender(nn.Module, ABC):
     """Abstract base class for recommender models"""
     
-    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None):
+    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None, llm=None):
         """
         Initialize base recommender
         
@@ -26,16 +27,52 @@ class AbstractRecommender(nn.Module, ABC):
         self.user_meta_fn = user_meta_fn
         self.item_meta_fn = item_meta_fn
         
+        # Precompute all item ids to avoid KeyError #* fixed
+        self.exist_items = torch.LongTensor(item_meta_fn().index.tolist())    # len = 3883
+        
         # Initialize user and item embeddings
         self.user_embedding = nn.Embedding(n_users, embed_dim)
         self.item_embedding = nn.Embedding(n_items, embed_dim)
         
+        # Initialize LLM
+        self._init_llm(llm)
+        
         # Initialize embeddings with Xavier uniform
         self._init_weights()
         
-        # Initialize GPT2 tokenizer and model
-        self.model = GPT2Model.from_pretrained('gpt2')
-        self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    def _init_llm(self, llm):
+        """Initialize LLM"""
+        if llm == 'gpt2':
+            self.llm_model = GPT2Model.from_pretrained('gpt2')
+            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+            target_modules = ["c_attn", "c_proj"]
+        elif llm == 'none':
+            self.llm_model, self.tokenizer = None, None
+            return
+        else:
+            raise NotImplementedError
+        
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        self.user_max_length = 29
+        self.item_max_length = 40
+        self.user_format = "gender: {}, age: {}, occupation: {}, zip_code: {}"  # 29
+        self.item_format = "title: {}, genres: {}"  # 40
+    
+        # embeding dim
+        self.id_embed_dim = self.embed_dim
+        self.llm_embed_dim = self.llm_model.config.hidden_size
+        
+        # lora
+        lora_config = LoraConfig(
+            r=16, lora_alpha=32,
+            target_modules=target_modules, 
+            lora_dropout=0.1, bias="none")
+        self.llm_model = get_peft_model(self.llm_model, lora_config)
+        
+        # freeze base model
+        for param in self.llm_model.base_model.parameters():
+            param.requires_grad = False
         
     def _init_weights(self):
         """Initialize weights using Xavier uniform"""
@@ -84,6 +121,26 @@ class AbstractRecommender(nn.Module, ABC):
         pass
     
     @torch.no_grad()
+    def precompute_item_embeds(self):
+        """Pre-compute item embeddings for evaluation"""
+        self.eval()
+        n_items = self.n_items  # 3953
+        all_items = torch.arange(self.n_items, device=self.device)
+
+        # Get embeddings for all items, use batch to avoid OOM
+        idx = 0
+        rec_bs = 1024
+        self.all_item_embeds = []
+        while idx < n_items:
+            high_idx = idx + rec_bs if idx + rec_bs < n_items else n_items
+            item_tensor = all_items[idx:high_idx]
+            cur_embeds = self.get_item_embeds(item_tensor)
+            self.all_item_embeds.append(cur_embeds)
+            idx += rec_bs
+        self.all_item_embeds = torch.cat(self.all_item_embeds, dim=0)
+        assert self.all_item_embeds.size(0) == n_items
+    
+    @torch.no_grad()
     def recommend(self, user_id, k=None):
         """
         Generate item recommendations for a user
@@ -97,12 +154,13 @@ class AbstractRecommender(nn.Module, ABC):
         """
         self.eval()
         user_tensor = torch.LongTensor([user_id]).to(self.device)
-        all_items = torch.arange(self.n_items).to(self.device)
+        
         # Get scores for all items
-        scores = self.predict(user_tensor.repeat(len(all_items)), all_items)
+        scores = self.predict(user_tensor, item_embeds=self.all_item_embeds)
         
         if k is not None:
             _, indices = torch.topk(scores, k)
+            all_items = self.all_items.to(self.device)
             return all_items[indices]
         
         return scores
@@ -123,37 +181,47 @@ class AbstractRecommender(nn.Module, ABC):
         """Get item metadata"""
         return self.item_meta_fn(item_id)
     
-    def get_user_meta_emb(self, user_id):
-        """Get user metadata embedding with GPT2 as tokenizer"""
-        user_meta = self.get_user_metadata(user_id)
-        input_data = {
-            # user_id和结果应该无关，所以不包含在输入里面
-            'gender': [user_meta['gender']],
-            'age': [user_meta['age']],
-            'occupation': [user_meta['occupation']],
-            'zip_code': [user_meta['zip_code']]
-        }
-        df = pd.DataFrame(input_data)
-        input_text = " ".join(df.apply(lambda x: " ".join(x), axis=1))
-        input_token = self.tokenizer(input_text, return_tensors='pt')
-        with torch.no_grad():
-            output = self.model(**input_token)
-        return output.last_hidden_state.mean(dim=1).squeeze()
+    def encode_text(self, texts, max_length):
+        """Encode texts by LLM"""
+        input_tokens = self.tokenizer(texts, return_tensors='pt', max_length=max_length, padding="max_length")
+        input_tokens = {key: value.to(self.device) for key, value in input_tokens.items()}
+        attention_mask = input_tokens['attention_mask']
+
+        output = self.llm_model(**input_tokens)
+            
+        last_hidden_state = output.last_hidden_state
+        # mean_hidden_state = ((last_hidden_state * attention_mask.unsqueeze(-1)).sum(1) \
+        #     / attention_mask.sum(1))
+        mean_hidden_state = last_hidden_state.mean(1)
+        return mean_hidden_state
     
-    def get_item_meta_emb(self, item_id):
-        """Get item metadata embedding with GPT2 as tokenizer"""
-        item_meta = self.get_item_metadata(item_id)
-        input_data = {
-            # item_id和结果应该无关，所以不包含在输入里面
-            'title': [item_meta['title']],
-            'genres': [item_meta['genres']]
-        }
-        df = pd.DataFrame(input_data)
-        input_text = " ".join(df.apply(lambda x: " ".join(x), axis=1))
-        input_token = self.tokenizer(input_text, return_tensors='pt')
-        with torch.no_grad():
-            output = self.model(**input_token)
-        return output.last_hidden_state.mean(dim=1).squeeze()
+    def get_user_meta_emb(self, user_ids):
+        """Get user metadata embedding"""
+        user_meta = self.get_user_metadata(user_ids.cpu())
+        input_texts = []
+        for index, user_data in user_meta.iterrows():
+            format_text = self.user_format.format(user_data['gender'], user_data['age'], user_data['occupation'], user_data['zip_code'])
+            input_texts.append(format_text)
+        return self.encode_text(input_texts, self.user_max_length)
+    
+    def get_item_meta_emb(self, item_ids):
+        """Get item metadata embedding"""
+        # ignore non-exist items
+        mask = ~torch.isin(item_ids, self.exist_items.to(self.device))
+        if mask.sum().item() > 0:
+            item_ids[mask] = 1  # 1 is exist
+        item_meta = self.get_item_metadata(item_ids.cpu())
+        
+        input_texts = []
+        for index, item_data in item_meta.iterrows():
+            format_text = self.item_format.format(item_data['title'], item_data['genres'])
+            input_texts.append(format_text)
+        item_meta_emb = self.encode_text(input_texts, self.item_max_length)
+        
+        # set masked embedding to zero
+        if mask.sum().item() > 0:
+            item_meta_emb[mask] = 0
+        return item_meta_emb
     
     @property
     def device(self):
@@ -162,8 +230,8 @@ class AbstractRecommender(nn.Module, ABC):
 
 
 class NCFRecommender(AbstractRecommender):
-    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None):
-        super().__init__(n_users, n_items, embed_dim, user_meta_fn, item_meta_fn)
+    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None, llm=None):
+        super().__init__(n_users, n_items, embed_dim, user_meta_fn, item_meta_fn, llm)
         self.mlp_layers = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
             nn.ReLU(),
@@ -171,6 +239,11 @@ class NCFRecommender(AbstractRecommender):
             nn.ReLU(),
             nn.Linear(embed_dim, 1)
         )
+    
+    def get_item_embeds(self, item_ids):
+        item_embeds = self.item_embedding(item_ids)
+        return item_embeds
+        
     def forward(self, batch_data):
         user_ids, pos_item_ids, neg_item_ids = batch_data
         user_embeds = self.user_embedding(user_ids)
@@ -187,52 +260,75 @@ class NCFRecommender(AbstractRecommender):
     def calculate_loss(self, pos_scores, neg_scores):
         return -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
     
-    def predict(self, user_ids, item_ids):
+    def predict(self, user_ids, item_ids=None, item_embeds=None):
         user_embeds = self.user_embedding(user_ids)
-        item_embeds = self.item_embedding(item_ids)
+        if item_embeds is None:
+            item_embeds = self.item_embedding(item_ids)
         
         # return (user_embeds * item_embeds).sum(dim=-1)
+        user_embeds = user_embeds.repeat(item_embeds.size(0))
         concated_embeds = torch.cat([user_embeds, item_embeds], dim=-1)
         mlp_output = self.mlp_layers(concated_embeds).reshape(-1)
         return mlp_output
     
 class LLMBasedNCFRecommender(AbstractRecommender):
-    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None):
-        super().__init__(n_users, n_items, embed_dim, user_meta_fn, item_meta_fn)
-        self.mlp_layers = nn.Sequential(
-            nn.Linear(embed_dim * 2, embed_dim),
+    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None, llm=None):
+        super().__init__(n_users, n_items, embed_dim, user_meta_fn, item_meta_fn, llm)
+        
+        self.user_meta_proj, self.item_meta_proj = [self._init_mlp_layer(self.llm_embed_dim, embed_dim, embed_dim) for _ in range(2)]
+        self.user_fusion, self.item_fusion = [self._init_mlp_layer(2*embed_dim, embed_dim, embed_dim) for _ in range(2)]
+        self.mlp_layers = self._init_mlp_layer(2*embed_dim, embed_dim, 1)
+        
+    def _init_mlp_layer(self, input_dim, embed_dim, output_dim):
+        return nn.Sequential(
+            nn.Linear(input_dim, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim),
             nn.ReLU(),
-            nn.Linear(embed_dim, 1)
+            nn.Linear(embed_dim, output_dim)
         )
+        
+    def get_user_embeds(self, user_ids):
+        user_embeds = self.user_embedding(user_ids)
+        user_meta_embeds = self.user_meta_proj(self.get_user_meta_emb(user_ids))
+        user_embeds = torch.cat([user_embeds, user_meta_embeds], dim=-1)
+        user_embeds = self.user_fusion(user_embeds)
+        return user_embeds
+        
+    def get_item_embeds(self, item_ids):
+        item_embeds = self.item_embedding(item_ids) # emb
+        item_meta_embeds = self.item_meta_proj(self.get_item_meta_emb(item_ids))    # llm_emb -> emb
+        item_embeds = torch.cat([item_embeds, item_meta_embeds], dim=-1)    # 2*emb
+        item_embeds = self.item_fusion(item_embeds) # 2*emb -> emb
+        return item_embeds
+    
+    def merge_user_item(self, user_embeds, item_embeds):
+        concated_embeds = torch.cat([user_embeds, item_embeds], dim=-1)
+        mlp_output = self.mlp_layers(concated_embeds)
+        return mlp_output
+        
     def forward(self, batch_data):
         user_ids, pos_item_ids, neg_item_ids = batch_data
-        user_embeds = self.user_embedding(user_ids)
-        pos_item_embeds = self.item_embedding(pos_item_ids)
-        neg_item_embeds = self.item_embedding(neg_item_ids)
         
-        concated_embeds = torch.cat([user_embeds, pos_item_embeds], dim=-1)
-        concated_embeds_neg = torch.cat([user_embeds, neg_item_embeds], dim=-1)
-        mlp_output = self.mlp_layers(concated_embeds)
-        mlp_output_neg = self.mlp_layers(concated_embeds_neg)
+        user_embeds = self.get_user_embeds(user_ids)
+        pos_item_embeds = self.get_item_embeds(pos_item_ids)
+        neg_item_embeds = self.get_item_embeds(neg_item_ids)
         
-        return mlp_output, mlp_output_neg
+        mlp_output_pos = self.merge_user_item(user_embeds, pos_item_embeds)
+        mlp_output_neg = self.merge_user_item(user_embeds, neg_item_embeds)
+        
+        return mlp_output_pos, mlp_output_neg
     
     def calculate_loss(self, pos_scores, neg_scores):
         return -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
     
-    # def predict(self, user_ids, item_ids):
-    #     user_embeds = self.user_embedding(user_ids)
-    #     item_embeds = self.item_embedding(item_ids)
-    #     return (user_embeds * item_embeds).sum(dim=-1)
-    
-    def predict(self, user_ids, item_ids):
-        user_embeds = self.user_embedding(user_ids)
-        item_embeds = self.item_embedding(item_ids)
+    def predict(self, user_ids, item_ids=None, item_embeds=None):
+        user_embeds = self.get_user_embeds(user_ids)
+        if item_embeds is None:
+            item_embeds = self.get_item_embeds(item_ids)
         
-        concated_embeds = torch.cat([user_embeds, item_embeds], dim=-1)
-        mlp_output = self.mlp_layers(concated_embeds)
+        user_embeds = user_embeds.repeat(item_embeds.size(0), 1)
+        mlp_output = self.merge_user_item(user_embeds, item_embeds).reshape(-1)
         return mlp_output
     
     
