@@ -5,34 +5,36 @@ from abc import ABC, abstractmethod
 import pandas as pd
 from transformers import GPT2Model, GPT2Tokenizer 
 from peft import LoraConfig, get_peft_model
+import loss
 
 class AbstractRecommender(nn.Module, ABC):
     """Abstract base class for recommender models"""
     
-    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None, llm=None):
+    def __init__(self, n_users, n_items, user_meta_fn=None, item_meta_fn=None, **model_kwargs):
         """
         Initialize base recommender
         
         Args:
             n_users (int): Number of users in the dataset
             n_items (int): Number of items in the dataset 
-            embed_dim (int): Dimension of embeddings
             user_meta_fn (function): function to get user metadata
             item_meta_fn (function): function to get item metadata
         """
         super().__init__()
         self.n_users = n_users
         self.n_items = n_items
-        self.embed_dim = embed_dim
+        self.embed_dim = model_kwargs.get('embed_dim')
         self.user_meta_fn = user_meta_fn
         self.item_meta_fn = item_meta_fn
+        llm = model_kwargs.get('llm')
+        self.loss = model_kwargs.get('loss')
         
         # Precompute all item ids to avoid KeyError #* fixed
         self.exist_items = torch.LongTensor(item_meta_fn().index.tolist())    # len = 3883
         
         # Initialize user and item embeddings
-        self.user_embedding = nn.Embedding(n_users, embed_dim)
-        self.item_embedding = nn.Embedding(n_items, embed_dim)
+        self.user_embedding = nn.Embedding(n_users, self.embed_dim)
+        self.item_embedding = nn.Embedding(n_items, self.embed_dim)
         
         # Initialize LLM
         self._init_llm(llm)
@@ -104,7 +106,18 @@ class AbstractRecommender(nn.Module, ABC):
         Returns:
             torch.FloatTensor: Computed loss value
         """
-        pass
+        loss_dict = {
+            'pairwise': loss.pairwise,
+            'binary_cross_entropy': loss.binary_cross_entropy,
+            'hinge': loss.hinge,
+            'mse': loss.mse,
+            'contrastive': loss.contrastive,
+            'triplet': loss.triplet,
+            'margin_ranking': loss.margin_ranking,
+            'softmax_cross_entropy': loss.softmax_cross_entropy,
+            'regulation': loss.regulation
+        }
+        return loss_dict[self.loss](pos_scores, neg_scores)
     
     @abstractmethod
     def predict(self, user_ids, item_ids):
@@ -230,8 +243,9 @@ class AbstractRecommender(nn.Module, ABC):
 
 
 class NCFRecommender(AbstractRecommender):
-    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None, llm=None):
-        super().__init__(n_users, n_items, embed_dim, user_meta_fn, item_meta_fn, llm)
+    def __init__(self, n_users, n_items, user_meta_fn=None, item_meta_fn=None, **model_kwargs):
+        super().__init__(n_users, n_items, user_meta_fn, item_meta_fn, **model_kwargs)
+        embed_dim = self.embed_dim
         self.mlp_layers = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
             nn.ReLU(),
@@ -258,7 +272,7 @@ class NCFRecommender(AbstractRecommender):
         return mlp_output, mlp_output_neg
     
     def calculate_loss(self, pos_scores, neg_scores):
-        return -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
+        return super().calculate_loss(pos_scores, neg_scores)
     
     def predict(self, user_ids, item_ids=None, item_embeds=None):
         user_embeds = self.user_embedding(user_ids)
@@ -272,8 +286,9 @@ class NCFRecommender(AbstractRecommender):
         return mlp_output
     
 class LLMBasedNCFRecommender(AbstractRecommender):
-    def __init__(self, n_users, n_items, embed_dim, user_meta_fn=None, item_meta_fn=None, llm=None):
-        super().__init__(n_users, n_items, embed_dim, user_meta_fn, item_meta_fn, llm)
+    def __init__(self, n_users, n_items, user_meta_fn=None, item_meta_fn=None, **model_kwargs):
+        super().__init__(n_users, n_items, user_meta_fn, item_meta_fn, **model_kwargs)
+        embed_dim = self.embed_dim
         
         self.user_meta_proj, self.item_meta_proj = [self._init_mlp_layer(self.llm_embed_dim, embed_dim, embed_dim) for _ in range(2)]
         self.user_fusion, self.item_fusion = [self._init_mlp_layer(2*embed_dim, embed_dim, embed_dim) for _ in range(2)]
@@ -320,7 +335,7 @@ class LLMBasedNCFRecommender(AbstractRecommender):
         return mlp_output_pos, mlp_output_neg
     
     def calculate_loss(self, pos_scores, neg_scores):
-        return -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
+        return super().calculate_loss(pos_scores, neg_scores)
     
     def predict(self, user_ids, item_ids=None, item_embeds=None):
         user_embeds = self.get_user_embeds(user_ids)

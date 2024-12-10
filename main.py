@@ -23,6 +23,7 @@ def parse_args():
     parser.add_argument('--esp', type=int, default=10, help="Early stop patience.")
     parser.add_argument('--exp-dir', type=str, default='./exp', help="Experiment directory.")
     parser.add_argument('--exp-name', type=str, default='NCF_1', help="Experiment directory.")
+    parser.add_argument('--loss', type=str, default='pairwise', help="Name of loss function. Please refer to the name in loss.py.")
     
     parser.add_argument('--emb-dim', type=int, default=1024, help="Embedding dim.")
     parser.add_argument('--llm', type=str, default='gpt2', help="LLM model name.")
@@ -70,13 +71,15 @@ def create_model(args, dataset):
         module = NCFRecommender
         model_kwargs = {
             'embed_dim': args.emb_dim,
-            'llm': 'none'
+            'llm': 'none',
+            'loss': args.loss
         }
     elif args.model in ['NCF-LLM']:
         module = LLMBasedNCFRecommender
         model_kwargs = {
             'embed_dim': args.emb_dim,
-            'llm': args.llm
+            'llm': args.llm,
+            'loss': args.loss
         }
     else:
         raise NotImplementedError
