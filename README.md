@@ -12,6 +12,7 @@
 - 测试时提前计算 item embedding 以避免重复计算，节省测试时间
 - 测试时分批次计算 item embedding 以避免显存溢出
 - 修正 predict 函数，测试时模型的输出为预测的分数而非 item embedding 和 user embedding 的 cosine 相似度
+- 添加多头注意力层，用于更好地融合 user embedding 和 item embedding
 
 ## 环境配置与安装
 - 将解压出来的 `ml-1m` 数据集文件夹放在主目录中

@@ -5,7 +5,9 @@ from abc import ABC, abstractmethod
 import pandas as pd
 from transformers import GPT2Model, GPT2Tokenizer 
 from peft import LoraConfig, get_peft_model
+
 import loss
+from layer import MultiHeadAttention
 
 class AbstractRecommender(nn.Module, ABC):
     """Abstract base class for recommender models"""
@@ -72,9 +74,7 @@ class AbstractRecommender(nn.Module, ABC):
             lora_dropout=0.1, bias="none")
         self.llm_model = get_peft_model(self.llm_model, lora_config)
         
-        # freeze base model
-        for param in self.llm_model.base_model.parameters():
-            param.requires_grad = False
+        self.llm_model.print_trainable_parameters()
         
     def _init_weights(self):
         """Initialize weights using Xavier uniform"""
@@ -109,13 +109,8 @@ class AbstractRecommender(nn.Module, ABC):
         loss_dict = {
             'pairwise': loss.pairwise,
             'binary_cross_entropy': loss.binary_cross_entropy,
-            'hinge': loss.hinge,
             'mse': loss.mse,
-            'contrastive': loss.contrastive,
-            'triplet': loss.triplet,
             'margin_ranking': loss.margin_ranking,
-            'softmax_cross_entropy': loss.softmax_cross_entropy,
-            'regulation': loss.regulation
         }
         return loss_dict[self.loss](pos_scores, neg_scores)
     
@@ -290,36 +285,49 @@ class LLMBasedNCFRecommender(AbstractRecommender):
         super().__init__(n_users, n_items, user_meta_fn, item_meta_fn, **model_kwargs)
         embed_dim = self.embed_dim
         
-        self.user_meta_proj, self.item_meta_proj = [self._init_mlp_layer(self.llm_embed_dim, embed_dim, embed_dim) for _ in range(2)]
-        self.user_fusion, self.item_fusion = [self._init_mlp_layer(2*embed_dim, embed_dim, embed_dim) for _ in range(2)]
-        self.mlp_layers = self._init_mlp_layer(2*embed_dim, embed_dim, 1)
+        self.user_meta_proj, self.item_meta_proj = [
+            self._init_mlp_layer(self.llm_embed_dim, embed_dim, embed_dim, 2) for _ in range(2)]
+        self.user_fusion, self.item_fusion = [
+            self._init_mlp_layer(2*embed_dim, embed_dim, embed_dim, 2) for _ in range(2)]
+        self.mlp_layers = self._init_mlp_layer(embed_dim, embed_dim, 1, 4)
         
-    def _init_mlp_layer(self, input_dim, embed_dim, output_dim):
+        num_heads = 8
+        num_layers = 1
+        self.attn_layers = nn.ModuleList([
+            MultiHeadAttention(self.embed_dim, self.embed_dim, num_heads)
+            for _ in range(num_layers)
+        ])
+        self.attn_res_proj = nn.Linear(2*self.embed_dim, self.embed_dim)
+        
+    def _init_mlp_layer(self, input_dim, embed_dim, output_dim, n_layers=3):
+        mid_layers = [nn.Linear(embed_dim, embed_dim), nn.ReLU()] * (n_layers - 2)
         return nn.Sequential(
             nn.Linear(input_dim, embed_dim),
             nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim),
-            nn.ReLU(),
+            *mid_layers,
             nn.Linear(embed_dim, output_dim)
         )
         
     def get_user_embeds(self, user_ids):
         user_embeds = self.user_embedding(user_ids)
         user_meta_embeds = self.user_meta_proj(self.get_user_meta_emb(user_ids))
-        user_embeds = torch.cat([user_embeds, user_meta_embeds], dim=-1)
-        user_embeds = self.user_fusion(user_embeds)
+        fusion_weights = torch.sigmoid(self.user_fusion(torch.cat([user_embeds, user_meta_embeds], dim=-1)))
+        user_embeds = fusion_weights * user_embeds + (1 - fusion_weights) * user_meta_embeds
         return user_embeds
         
     def get_item_embeds(self, item_ids):
         item_embeds = self.item_embedding(item_ids) # emb
         item_meta_embeds = self.item_meta_proj(self.get_item_meta_emb(item_ids))    # llm_emb -> emb
-        item_embeds = torch.cat([item_embeds, item_meta_embeds], dim=-1)    # 2*emb
-        item_embeds = self.item_fusion(item_embeds) # 2*emb -> emb
+        fusion_weights = torch.sigmoid(self.item_fusion(torch.cat([item_embeds, item_meta_embeds], dim=-1)))
+        item_embeds = fusion_weights * item_embeds + (1 - fusion_weights) * item_meta_embeds
         return item_embeds
     
     def merge_user_item(self, user_embeds, item_embeds):
-        concated_embeds = torch.cat([user_embeds, item_embeds], dim=-1)
-        mlp_output = self.mlp_layers(concated_embeds)
+        attn_output = user_embeds
+        for layer in self.attn_layers:
+            attn_output = layer(attn_output, item_embeds) + attn_output
+        attn_output = attn_output + self.attn_res_proj(torch.cat([user_embeds, item_embeds], dim=-1))
+        mlp_output = self.mlp_layers(attn_output)
         return mlp_output
         
     def forward(self, batch_data):

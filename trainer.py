@@ -36,10 +36,11 @@ class Trainer:
         self.test_loader = test_data
         
         # Setup optimizer
+        parameters = [param for param in model.parameters() if param.requires_grad]
         if optimizer.lower() == 'adam':
-            self.optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+            self.optimizer = optim.Adam(parameters, lr=lr, weight_decay=weight_decay)
         elif optimizer.lower() == 'sgd':
-            self.optimizer = optim.SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
+            self.optimizer = optim.SGD(parameters, lr=lr, weight_decay=weight_decay)
         else:
             raise ValueError(f"Optimizer {optimizer} not supported")
             
