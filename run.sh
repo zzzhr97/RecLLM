@@ -14,4 +14,4 @@ python main.py \
     --exp-name="NCF4" \
     --emb-dim 1024 \
     --llm gpt2 \
-    --loss pairwise
+    --loss bpr

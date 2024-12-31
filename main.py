@@ -23,7 +23,8 @@ def parse_args():
     parser.add_argument('--esp', type=int, default=10, help="Early stop patience.")
     parser.add_argument('--exp-dir', type=str, default='./exp', help="Experiment directory.")
     parser.add_argument('--exp-name', type=str, default='NCF_1', help="Experiment directory.")
-    parser.add_argument('--loss', type=str, default='pairwise', help="Name of loss function. Please refer to the name in loss.py.")
+    parser.add_argument('--loss', type=str, default='bpr', help="Loss function.",
+                        choices=['bpr', 'bce', 'mse', 'margin_ranking'])
     
     parser.add_argument('--emb-dim', type=int, default=1024, help="Embedding dim.")
     parser.add_argument('--llm', type=str, default='gpt2', help="LLM model name.")

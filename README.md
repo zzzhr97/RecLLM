@@ -18,14 +18,17 @@
 - 将解压出来的 `ml-1m` 数据集文件夹放在主目录中
 - 根据 `requirements.txt` 安装合适的 packages
 
-## 运行
-- 使用 `python main.py --help` 查看帮助
-- 修改 `run.sh` 中的参数
-- 运行 `bash run.sh`
+## 如何运行？
+- 使用 `python main.py --help` 查看命令行参数的帮助说明
+- 修改 `run.sh` 中的命令行参数
+  - 修改 `--exp-name="NCF_test1"` 即可指定本次实验的 `log` 日志文件和模型参数保存的路径
+- 运行 `bash run.sh` 
+  - 从终端中查看模型训练的进度
+  - 从日志文件中查看完整的训练和测试结果
 
-## 实验记录
+## 如何查看实验记录？
 - 在 `$exp_dir` (默认为 `./exp`) 中查找相应的实验文件夹
 - 实验文件夹中保存以下文件
-  - `args`: 保存命令行参数
-  - `log`: 实验记录
+  - `args`: 记录实验环境和命令行参
+  - `log`: ：记录训练和测试的实验结果
   - `ckpt.pth`: 在 evaluation dataset 上评估得到的最好的模型参数

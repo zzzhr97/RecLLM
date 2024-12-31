@@ -31,7 +31,7 @@ class AbstractRecommender(nn.Module, ABC):
         llm = model_kwargs.get('llm')
         self.loss = model_kwargs.get('loss')
         
-        # Precompute all item ids to avoid KeyError #* fixed
+        # Precompute all item ids to avoid KeyError
         self.exist_items = torch.LongTensor(item_meta_fn().index.tolist())    # len = 3883
         
         # Initialize user and item embeddings
@@ -60,8 +60,8 @@ class AbstractRecommender(nn.Module, ABC):
         
         self.user_max_length = 29
         self.item_max_length = 40
-        self.user_format = "gender: {}, age: {}, occupation: {}, zip_code: {}"  # 29
-        self.item_format = "title: {}, genres: {}"  # 40
+        self.user_format = "gender: {}, age: {}, occupation: {}, zip_code: {}"
+        self.item_format = "title: {}, genres: {}"
     
         # embeding dim
         self.id_embed_dim = self.embed_dim
@@ -107,8 +107,8 @@ class AbstractRecommender(nn.Module, ABC):
             torch.FloatTensor: Computed loss value
         """
         loss_dict = {
-            'pairwise': loss.pairwise,
-            'binary_cross_entropy': loss.binary_cross_entropy,
+            'bpr': loss.bpr,
+            'bce': loss.bce,
             'mse': loss.mse,
             'margin_ranking': loss.margin_ranking,
         }
